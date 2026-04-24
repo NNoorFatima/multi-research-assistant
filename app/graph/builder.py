@@ -6,10 +6,15 @@ Constructs and compiles the LangGraph StateGraph.
 Graph topology:
   input_node
     └─► intent_classifier_node
-          └─► decision_node  (conditional router)
-                ├── "vague"   → clarification_node  → memory_update_node → END
+          └─► (conditional routing via decision_node function)
+                ├── "vague"   → clarification_node   → memory_update_node → END
                 ├── "simple"  → answer_generator_node → memory_update_node → END
                 └── "complex" → retriever_node → answer_generator_node → memory_update_node → END
+
+KEY POINT: decision_node is NOT registered as a graph node.
+It is used only as the routing *function* passed to add_conditional_edges.
+There is no add_edge("intent_classifier", "decision") — that would reference
+a non-existent node and crash at compile time.
 """
 
 import logging
@@ -21,7 +26,7 @@ from app.graph.state import GraphState
 from app.graph.nodes import (
     input_node,
     intent_classifier_node,
-    decision_node,
+    decision_node,          # routing function, NOT a graph node
     retriever_node,
     answer_generator_node,
     clarification_node,
@@ -31,55 +36,48 @@ from app.graph.nodes import (
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Routing wrapper
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _route_from_decision(state: GraphState) -> Literal[
     "clarification", "retriever", "answer_generator"
 ]:
     """
-    Thin wrapper around decision_node used as the conditional_edge function.
-    LangGraph calls this with the current state and expects a node-name string back.
+    Passed to add_conditional_edges as the routing function.
+    LangGraph calls this after intent_classifier_node finishes
+    and routes to whichever node name this returns.
     """
     return decision_node(state)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph builder
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_graph() -> StateGraph:
+def build_graph():
     """
-    Assembles the full LangGraph StateGraph and returns the compiled app.
+    Assembles and compiles the full LangGraph StateGraph.
 
-    Usage:
-        graph = build_graph()
-        result = graph.invoke(initial_state)
+    Returns:
+        A compiled LangGraph app — call it with graph_app.invoke(state).
     """
     builder = StateGraph(GraphState)
 
-    # ── Register nodes ───────────────────────────────────────────
+    # ── Register all nodes ───────────────────────────────────────
     builder.add_node("input",             input_node)
     builder.add_node("intent_classifier", intent_classifier_node)
     builder.add_node("retriever",         retriever_node)
     builder.add_node("answer_generator",  answer_generator_node)
     builder.add_node("clarification",     clarification_node)
     builder.add_node("memory_update",     memory_update_node)
+    # NOTE: decision_node is NOT added here — it's a routing function only
 
     # ── Entry point ──────────────────────────────────────────────
     builder.set_entry_point("input")
 
-    # ── Linear edges ─────────────────────────────────────────────
-    builder.add_edge("input",             "intent_classifier")
-    builder.add_edge("intent_classifier", "decision")          # hits conditional below
+    # ── Fixed edge: input → intent_classifier ────────────────────
+    builder.add_edge("input", "intent_classifier")
 
-    # ── Conditional routing from decision ────────────────────────
-    # decision_node is NOT registered as a graph node — it's used
-    # purely as the routing function for add_conditional_edges.
+    # ── Conditional routing FROM intent_classifier ───────────────
+    # After intent_classifier_node runs and sets state["intent"],
+    # LangGraph calls _route_from_decision(state) to pick the next node.
+    # There is NO separate "decision" node — the routing happens here.
     builder.add_conditional_edges(
-        source="intent_classifier",          # after intent is known
-        path=_route_from_decision,           # returns "clarification" | "retriever" | "answer_generator"
+        source="intent_classifier",
+        path=_route_from_decision,
         path_map={
             "clarification":    "clarification",
             "retriever":        "retriever",
@@ -87,22 +85,19 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # ── Converging edges → memory_update ─────────────────────────
-    builder.add_edge("clarification",    "memory_update")
-    builder.add_edge("retriever",        "answer_generator")
-    builder.add_edge("answer_generator", "memory_update")
+    # ── After retrieval, always generate answer ───────────────────
+    builder.add_edge("retriever", "answer_generator")
 
-    # ── Terminal edge ─────────────────────────────────────────────
+    # ── Both answer paths converge to memory_update ──────────────
+    builder.add_edge("answer_generator", "memory_update")
+    builder.add_edge("clarification",    "memory_update")
+
+    # ── Terminal ─────────────────────────────────────────────────
     builder.add_edge("memory_update", END)
 
-    # ── Compile ───────────────────────────────────────────────────
     graph = builder.compile()
-    logger.info("[builder] Graph compiled successfully")
+    logger.info("[builder] Graph compiled — nodes: input → intent_classifier → [clarification|retriever→answer_generator] → memory_update → END")
     return graph
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Module-level singleton (imported by main.py)
-# ─────────────────────────────────────────────────────────────────────────────
 
 graph_app = build_graph()

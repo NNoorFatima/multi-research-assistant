@@ -347,11 +347,16 @@ def memory_update_node(state: GraphState) -> dict:
     updated_queries = state["previous_queries"] + [state["query"]]
 
     # Persist to memory store
+    # upsert_memory(
+    #     session_id=state["session_id"],
+    #     chat_history=updated_history,
+    #     previous_queries=updated_queries,
+    # )
     upsert_memory(
         session_id=state["session_id"],
         chat_history=updated_history,
         previous_queries=updated_queries,
-    )
+        )
 
     logger.info("[memory_update_node] history now %d messages", len(updated_history))
 
