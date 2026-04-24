@@ -426,7 +426,6 @@ export default function App() {
           ))}
         </div>
       </div>
-
       {/* ── Main panel ──────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
 
